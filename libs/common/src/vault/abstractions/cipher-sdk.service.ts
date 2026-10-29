@@ -304,12 +304,13 @@ export abstract class CipherSdkService {
   ): Promise<CipherView | undefined>;
 
   /**
-   * Lists and decrypts all ciphers from state using the SDK.
+   * Decrypts every given cipher, typically the whole vault, using the SDK.
    *
+   * @param ciphers The encrypted ciphers to decrypt
    * @param userId The user ID to use for SDK client
    * @returns A promise that resolves to the decrypt result containing successes and failures
    */
-  abstract getAllDecrypted(userId: UserId): Promise<DecryptAllCiphersResult>;
+  abstract decryptAll(ciphers: Cipher[], userId: UserId): Promise<DecryptAllCiphersResult>;
 
   /**
    * Fetches all ciphers for an organization from the API using the SDK.

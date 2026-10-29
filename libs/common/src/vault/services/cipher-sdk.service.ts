@@ -25,6 +25,9 @@ import { RestrictedCipherWriteError } from "../abstractions/cipher.service";
 import { Cipher } from "../models/domain/cipher";
 import { CipherView } from "../models/view/cipher.view";
 
+/** Ciphers per SDK decrypt call, which bounds the SDK's peak memory. */
+const DECRYPT_BATCH_SIZE = 250;
+
 /**
  * The SDK refuses an edit of a restricted cipher locally (`GatedCipher`) or when the original it
  * was given is itself restricted (`PartialOriginal`). Vault shows one message for both.
@@ -521,16 +524,28 @@ export class DefaultCipherSdkService implements CipherSdkService {
     );
   }
 
-  async getAllDecrypted(userId: UserId): Promise<DecryptAllCiphersResult> {
+  async decryptAll(ciphers: Cipher[], userId: UserId): Promise<DecryptAllCiphersResult> {
     return await firstValueFrom(
       this.sdkService.userClient$(userId).pipe(
         switchMap(async (sdk) => {
           using ref = sdk.take();
           const sdkCiphersClient = ref.value.vault().ciphers();
+          const result: DecryptAllCiphersResult = { successes: [], failures: [] };
 
-          const decryptResult = await sdkCiphersClient.get_all();
+          // In batches rather than `get_all()`: WebAssembly memory grows to the largest call
+          // and never shrinks, and a whole 12k item vault in and out at once pins ~130 MB.
+          for (let start = 0; start < ciphers.length; start += DECRYPT_BATCH_SIZE) {
+            const batch = ciphers.slice(start, start + DECRYPT_BATCH_SIZE);
+            const decryptResult = await sdkCiphersClient.decrypt_list_full_with_failures(
+              batch.map((cipher) => cipher.toSdkCipher()),
+            );
 
-          return this.toDecryptAllCiphersResult(decryptResult);
+            const { successes, failures } = this.toDecryptAllCiphersResult(decryptResult);
+            result.successes.push(...successes);
+            result.failures.push(...failures);
+          }
+
+          return result;
         }),
         catchError((error: unknown) => {
           this.logService.error(`Failed to list and decrypt ciphers: ${error}`);
