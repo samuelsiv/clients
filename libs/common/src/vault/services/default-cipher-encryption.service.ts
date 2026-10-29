@@ -12,6 +12,9 @@ import { Cipher } from "../models/domain/cipher";
 import { AttachmentView } from "../models/view/attachment.view";
 import { CipherView } from "../models/view/cipher.view";
 
+/** Ciphers per SDK decrypt call, which bounds the SDK's peak memory. */
+const DECRYPT_BATCH_SIZE = 250;
+
 export class DefaultCipherEncryptionService implements CipherEncryptionService {
   constructor(
     private sdkService: SdkService,
@@ -196,15 +199,26 @@ export class DefaultCipherEncryptionService implements CipherEncryptionService {
         concatMap(async (sdk) => {
           using ref = sdk.take();
 
-          const result: DecryptCipherListResult = await ref.value
-            .vault()
-            .ciphers()
-            .decrypt_list_with_failures(ciphers.map((cipher) => cipher.toSdkCipher()));
+          const decryptedCiphers: CipherListView[] = [];
+          const failedCiphers: Cipher[] = [];
 
-          const decryptedCiphers = result.successes;
-          const failedCiphers: Cipher[] = result.failures
-            .map((cipher) => Cipher.fromSdkCipher(cipher))
-            .filter((cipher): cipher is Cipher => cipher !== undefined);
+          // In batches: WebAssembly memory grows to the largest call and never shrinks, so
+          // decrypting a 12k item vault at once pins ~70 MB for the process lifetime.
+          for (let start = 0; start < ciphers.length; start += DECRYPT_BATCH_SIZE) {
+            const batch = ciphers.slice(start, start + DECRYPT_BATCH_SIZE);
+            const result: DecryptCipherListResult = await ref.value
+              .vault()
+              .ciphers()
+              .decrypt_list_with_failures(batch.map((cipher) => cipher.toSdkCipher()));
+
+            decryptedCiphers.push(...result.successes);
+            for (const failure of result.failures) {
+              const cipher = Cipher.fromSdkCipher(failure);
+              if (cipher !== undefined) {
+                failedCiphers.push(cipher);
+              }
+            }
+          }
 
           return [decryptedCiphers, failedCiphers] as [CipherListView[], Cipher[]];
         }),
